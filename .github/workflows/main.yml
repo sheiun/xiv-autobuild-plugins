@@ -39,6 +39,10 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
     steps:
+      - name: Checkout build script
+        uses: actions/checkout@v3
+        with:
+          path: build-scripts
       - name: Extract repository name
         id: repo-info
         run: |
@@ -63,11 +67,22 @@ jobs:
         shell: pwsh
       - name: Checkout Repository
         if: steps.repo-info.outputs.skip != 'true'
+        id: checkout-repo
+        continue-on-error: true
         uses: actions/checkout@v3
         with:
           repository: ${{ steps.repo-info.outputs.owner }}/${{ steps.repo-info.outputs.repo }}
           submodules: recursive
           fetch-depth: 0
+          path: plugin-repo
+      - name: Checkout Repository (without submodules)
+        if: steps.repo-info.outputs.skip != 'true' && steps.checkout-repo.outcome == 'failure'
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ steps.repo-info.outputs.owner }}/${{ steps.repo-info.outputs.repo }}
+          submodules: false
+          fetch-depth: 0
+          path: plugin-repo
       - name: Skip non-GitHub repositories
         if: steps.repo-info.outputs.skip == 'true'
         run: |
@@ -83,22 +98,27 @@ jobs:
 
           $datePart = $taipeiTime.ToString("yy-MM-dd")
 
-          git fetch --tags
-          $tags = git tag --list "$datePart-*"
+          Push-Location "plugin-repo"
+          try {
+            git fetch --tags
+            $tags = git tag --list "$datePart-*"
 
-          $maxNumber = 0
-          foreach ($tag in $tags) {
-              $numberPart = $tag.Split('-')[-1]
-              if ($numberPart -match '^\d{2}$') {
-                  $currentNumber = [int]$numberPart
-                  $maxNumber = [Math]::Max($maxNumber, $currentNumber)
-              }
+            $maxNumber = 0
+            foreach ($tag in $tags) {
+                $numberPart = $tag.Split('-')[-1]
+                if ($numberPart -match '^\d{2}$') {
+                    $currentNumber = [int]$numberPart
+                    $maxNumber = [Math]::Max($maxNumber, $currentNumber)
+                }
+            }
+
+            $nextNumber = $maxNumber + 1
+            $newTag = "{0}-{1:D2}" -f $taipeiTime.ToString("yy-MM-dd"), $nextNumber
+            echo "new_tag=$newTag" >> $env:GITHUB_OUTPUT
+            echo "TAG=$newTag" >> $env:GITHUB_ENV
+          } finally {
+            Pop-Location
           }
-
-          $nextNumber = $maxNumber + 1
-          $newTag = "{0}-{1:D2}" -f $taipeiTime.ToString("yy-MM-dd"), $nextNumber
-          echo "new_tag=$newTag" >> $env:GITHUB_OUTPUT
-          echo "TAG=$newTag" >> $env:GITHUB_ENV
         shell: pwsh
       - name: Setup MSBuild
         if: steps.repo-info.outputs.skip != 'true'
@@ -110,21 +130,38 @@ jobs:
       - name: Define VERSION
         if: steps.repo-info.outputs.skip != 'true'
         run: |
-          $env:COMMIT = $env:GITHUB_SHA.Substring(0, 7)
-          $env:REPO_NAME = "${{ steps.repo-info.outputs.repo_name }}"
-          $env:BRANCH = $env:GITHUB_REF -replace '.*/'
+          Push-Location "plugin-repo"
+          try {
+            $env:COMMIT = (git rev-parse --short HEAD)
+            $env:REPO_NAME = "${{ steps.repo-info.outputs.repo_name }}"
+            $env:BRANCH = (git rev-parse --abbrev-ref HEAD)
 
-          ($env:REPO_NAME) >> VERSION
-          ($env:BRANCH) >> VERSION
-          ($env:COMMIT) >> VERSION
+            ($env:REPO_NAME) >> VERSION
+            ($env:BRANCH) >> VERSION
+            ($env:COMMIT) >> VERSION
+          } finally {
+            Pop-Location
+          }
         shell: pwsh
       - name: Build and Test Plugins
         if: steps.repo-info.outputs.skip != 'true'
-        run: .\build.ps1 ci
+        run: |
+          # Copy build.ps1 and global.json to plugin repository
+          Copy-Item -Path "build-scripts\build.ps1" -Destination "plugin-repo\build.ps1" -Force
+          if (Test-Path "build-scripts\global.json") {
+            Copy-Item -Path "build-scripts\global.json" -Destination "plugin-repo\global.json" -Force
+          }
+          # Change to plugin repository directory and run build
+          Push-Location "plugin-repo"
+          try {
+            .\build.ps1 ci
+          } finally {
+            Pop-Location
+          }
         shell: pwsh
       - name: Upload artifact
         if: steps.repo-info.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: plugins-artifact-${{ steps.repo-info.outputs.repo_name }}
-          path: bin\Release
+          path: plugin-repo\bin\Release
