@@ -1,0 +1,130 @@
+name: Build Plugins
+on: [workflow_dispatch]
+
+concurrency:
+  group: build_plugins_${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Prepare Repository Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Setup jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+      - name: Read repo_urls.txt and create matrix
+        id: set-matrix
+        run: |
+          # Read repo_urls.txt, filter out empty lines and comments, create JSON matrix
+          repos=$(cat repo_urls.txt | grep -v '^$' | grep -v '^#' | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({repo_url: .})')
+          echo "matrix={\"include\":$repos}" >> $GITHUB_OUTPUT
+          count=$(echo $repos | jq 'length')
+          echo "Found $count repositories"
+
+  build:
+    name: Build ${{ matrix.repo_url }}
+    needs: prepare
+    permissions:
+      id-token: write
+      contents: write
+      attestations: write
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Extract repository name
+        id: repo-info
+        run: |
+          $repoUrl = "${{ matrix.repo_url }}"
+          # Only handle GitHub URLs, skip everything else
+          if ($repoUrl -match 'github\.com/([^/]+)/([^/]+)') {
+              $owner = $matches[1]
+              $repo = $matches[2]
+              # Handle URLs with /tree/branch or /tree/branch/path
+              if ($repo -match '^([^/]+)') {
+                  $repo = $matches[1]
+              }
+              echo "owner=$owner" >> $env:GITHUB_OUTPUT
+              echo "repo=$repo" >> $env:GITHUB_OUTPUT
+              echo "repo_name=$repo" >> $env:GITHUB_OUTPUT
+              echo "skip=false" >> $env:GITHUB_OUTPUT
+          }
+          else {
+              Write-Host "Skipping non-GitHub repository: $repoUrl"
+              echo "skip=true" >> $env:GITHUB_OUTPUT
+          }
+        shell: pwsh
+      - name: Checkout Repository
+        if: steps.repo-info.outputs.skip != 'true'
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ steps.repo-info.outputs.owner }}/${{ steps.repo-info.outputs.repo }}
+          submodules: recursive
+          fetch-depth: 0
+      - name: Skip non-GitHub repositories
+        if: steps.repo-info.outputs.skip == 'true'
+        run: |
+          Write-Host "Skipping non-GitHub repository: ${{ matrix.repo_url }}"
+        shell: pwsh
+      - name: Generate release tag (UTC+8)
+        if: steps.repo-info.outputs.skip != 'true'
+        id: generate-tag
+        run: |
+          $tzId = "Asia/Taipei"
+          $utcNow = [DateTime]::UtcNow
+          $taipeiTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId($utcNow, $tzId)
+
+          $datePart = $taipeiTime.ToString("yy-MM-dd")
+
+          git fetch --tags
+          $tags = git tag --list "$datePart-*"
+
+          $maxNumber = 0
+          foreach ($tag in $tags) {
+              $numberPart = $tag.Split('-')[-1]
+              if ($numberPart -match '^\d{2}$') {
+                  $currentNumber = [int]$numberPart
+                  $maxNumber = [Math]::Max($maxNumber, $currentNumber)
+              }
+          }
+
+          $nextNumber = $maxNumber + 1
+          $newTag = "{0}-{1:D2}" -f $taipeiTime.ToString("yy-MM-dd"), $nextNumber
+          echo "new_tag=$newTag" >> $env:GITHUB_OUTPUT
+          echo "TAG=$newTag" >> $env:GITHUB_ENV
+        shell: pwsh
+      - name: Setup MSBuild
+        if: steps.repo-info.outputs.skip != 'true'
+        uses: microsoft/setup-msbuild@v1.0.2
+      - uses: actions/setup-dotnet@v3
+        if: steps.repo-info.outputs.skip != 'true'
+        with:
+          dotnet-version: '9.0.200'
+      - name: Define VERSION
+        if: steps.repo-info.outputs.skip != 'true'
+        run: |
+          $env:COMMIT = $env:GITHUB_SHA.Substring(0, 7)
+          $env:REPO_NAME = "${{ steps.repo-info.outputs.repo_name }}"
+          $env:BRANCH = $env:GITHUB_REF -replace '.*/'
+
+          ($env:REPO_NAME) >> VERSION
+          ($env:BRANCH) >> VERSION
+          ($env:COMMIT) >> VERSION
+        shell: pwsh
+      - name: Build and Test Plugins
+        if: steps.repo-info.outputs.skip != 'true'
+        run: .\build.ps1 ci
+        shell: pwsh
+      - name: Upload artifact
+        if: steps.repo-info.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugins-artifact-${{ steps.repo-info.outputs.repo_name }}
+          path: bin\Release
