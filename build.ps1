@@ -28,26 +28,35 @@ function Get-ProjectsFromSolution($solutionPath) {
         if ($line -match '^Project\(') {
             # Extract the project path (second quoted string after the equals sign)
             # Pattern: Project(...) = "Name", "Path\To\Project.csproj", "{GUID}"
+            # Match: Project("{GUID}") = "Name", "Path\To\Project.csproj", "{GUID}"
             if ($line -match '=\s*"[^"]*",\s*"([^"]+\.csproj)"') {
                 $projectPath = $matches[1]
-                # Convert relative path to absolute (handle both \ and / separators)
-                $projectPath = $projectPath -replace '/', '\'
                 
-                # Resolve path relative to solution directory
-                if ([System.IO.Path]::IsPathRooted($projectPath)) {
-                    $fullPath = $projectPath
-                } else {
-                    $fullPath = Join-Path $solutionDir $projectPath
-                }
-                
-                # Normalize the path
-                try {
-                    $fullPath = [System.IO.Path]::GetFullPath($fullPath)
-                    if (Test-Path $fullPath) {
-                        $projects += $fullPath
+                # Validate we got a proper path
+                if ($projectPath -and $projectPath.Length -gt 4 -and $projectPath.EndsWith(".csproj")) {
+                    # Convert relative path to absolute (handle both \ and / separators)
+                    $projectPath = $projectPath -replace '/', '\'
+                    
+                    # Resolve path relative to solution directory
+                    if ([System.IO.Path]::IsPathRooted($projectPath)) {
+                        $fullPath = $projectPath
+                    } else {
+                        $fullPath = Join-Path $solutionDir $projectPath
                     }
-                } catch {
-                    # Skip invalid paths
+                    
+                    # Normalize the path
+                    try {
+                        $fullPath = [System.IO.Path]::GetFullPath($fullPath)
+                        # Validate the path is reasonable before adding
+                        if ($fullPath -and $fullPath.Length -gt 10 -and $fullPath.EndsWith(".csproj") -and (Test-Path $fullPath)) {
+                            $projects += $fullPath
+                        } else {
+                            Write-Warning "Skipping invalid or non-existent project path: $fullPath"
+                        }
+                    } catch {
+                        # Skip invalid paths
+                        Write-Warning "Skipping invalid project path: $projectPath - Error: $_"
+                    }
                 }
             }
         }
@@ -55,76 +64,32 @@ function Get-ProjectsFromSolution($solutionPath) {
     return $projects
 }
 
-# First, try to find build projects directly (build directory or *build*.csproj)
-# This is for Nuke build systems where build.csproj is typically not in the solution
-$buildDirs = @(
-    "$PSScriptRoot\build",
-    $PSScriptRoot
-)
+# First, try to find and parse .sln files (most common case)
+$solutionFiles = Get-ChildItem -Path $PSScriptRoot -Filter "*.sln" -ErrorAction SilentlyContinue
 
-foreach ($dir in $buildDirs) {
-    if (Test-Path $dir) {
-        # Search for *build*.csproj files
-        $foundFiles = Get-ChildItem -Path $dir -Filter "*build*.csproj" -ErrorAction SilentlyContinue
-        if ($foundFiles) {
-            $BuildProjectFile = $foundFiles[0].FullName
+if ($solutionFiles) {
+    foreach ($sln in $solutionFiles) {
+        $projects = Get-ProjectsFromSolution $sln.FullName
+        
+        if ($projects -and $projects.Count -gt 0) {
+            # Use the first project from the solution file
+            $selectedProject = $projects[0]
+            if ($selectedProject -is [string]) {
+                $BuildProjectFile = $selectedProject
+            } else {
+                $BuildProjectFile = $selectedProject.ToString()
+            }
             break
         }
-        # Also check for any .csproj in build directory
-        if ($dir -like "*\build") {
-            $foundFiles = Get-ChildItem -Path $dir -Filter "*.csproj" -ErrorAction SilentlyContinue
-            if ($foundFiles) {
-                $BuildProjectFile = $foundFiles[0].FullName
-                break
-            }
-        }
     }
 }
 
-# If no build project found directly, try to find and parse .sln files
+# If no solution file or no projects found, search for .csproj files directly
 if ($null -eq $BuildProjectFile) {
-    $solutionFiles = Get-ChildItem -Path $PSScriptRoot -Filter "*.sln" -ErrorAction SilentlyContinue
-
-    if ($solutionFiles) {
-        foreach ($sln in $solutionFiles) {
-            $projects = Get-ProjectsFromSolution $sln.FullName
-            
-            if ($projects) {
-                # Prefer projects in "build" directory or with "build" in name
-                $buildProjects = $projects | Where-Object { 
-                    $_ -like "*\build\*" -or 
-                    (Split-Path $_ -Leaf) -like "*build*.csproj" 
-                }
-                
-                if ($buildProjects) {
-                    $BuildProjectFile = $buildProjects[0]
-                    break
-                } else {
-                    # If no build project in solution, use first project found
-                    # (Note: This might not be the build project for Nuke-based repos)
-                    $BuildProjectFile = $projects[0]
-                    break
-                }
-            }
-        }
-    }
-}
-
-# Fallback: Search in common locations if .sln parsing didn't work
-if ($null -eq $BuildProjectFile) {
-    $SearchDirectories = @(
-        "$PSScriptRoot\build",
-        $PSScriptRoot
-    )
-
-    foreach ($dir in $SearchDirectories) {
-        if (Test-Path $dir) {
-            $foundFiles = Get-ChildItem -Path $dir -Filter "*.csproj" -ErrorAction SilentlyContinue
-            if ($foundFiles) {
-                $BuildProjectFile = $foundFiles[0].FullName
-                break
-            }
-        }
+    # First check root directory for any .csproj
+    $foundFiles = Get-ChildItem -Path $PSScriptRoot -Filter "*.csproj" -ErrorAction SilentlyContinue
+    if ($foundFiles) {
+        $BuildProjectFile = $foundFiles[0].FullName
     }
 }
 
@@ -139,13 +104,8 @@ if ($null -eq $BuildProjectFile) {
         }
     
     if ($foundFiles) {
-        # Prefer files in a "build" directory if multiple found
-        $buildDirFiles = $foundFiles | Where-Object { $_.DirectoryName -like "*\build" }
-        if ($buildDirFiles) {
-            $BuildProjectFile = $buildDirFiles[0].FullName
-        } else {
-            $BuildProjectFile = $foundFiles[0].FullName
-        }
+        # Use the first .csproj file found
+        $BuildProjectFile = $foundFiles[0].FullName
     }
 }
 
@@ -156,19 +116,28 @@ if ($null -eq $BuildProjectFile) {
 }
 
 # Validate the path before using it
-if ($null -ne $BuildProjectFile) {
-    try {
-        $BuildProjectFile = [System.IO.Path]::GetFullPath($BuildProjectFile)
-        if (-not (Test-Path $BuildProjectFile)) {
-            Write-Error "Build project file does not exist: $BuildProjectFile"
-            exit 1
-        }
-    } catch {
-        Write-Error "Invalid build project path: $BuildProjectFile"
+if ($null -eq $BuildProjectFile -or $BuildProjectFile -eq "") {
+    Write-Error "Could not determine build project file"
+    exit 1
+}
+
+# Ensure we have a string, not a character or other type
+$BuildProjectFile = $BuildProjectFile.ToString().Trim()
+
+# Validate it's a reasonable path (not just a single character)
+if ($BuildProjectFile.Length -lt 5 -or -not $BuildProjectFile.EndsWith(".csproj")) {
+    Write-Error "Invalid build project path (too short or not a .csproj file): $BuildProjectFile"
+    exit 1
+}
+
+try {
+    $BuildProjectFile = [System.IO.Path]::GetFullPath($BuildProjectFile)
+    if (-not (Test-Path $BuildProjectFile)) {
+        Write-Error "Build project file does not exist: $BuildProjectFile"
         exit 1
     }
-} else {
-    Write-Error "Could not determine build project file"
+} catch {
+    Write-Error "Invalid build project path: $BuildProjectFile - Error: $_"
     exit 1
 }
 
