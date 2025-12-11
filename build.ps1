@@ -32,10 +32,22 @@ function Get-ProjectsFromSolution($solutionPath) {
                 $projectPath = $matches[1]
                 # Convert relative path to absolute (handle both \ and / separators)
                 $projectPath = $projectPath -replace '/', '\'
-                $fullPath = Join-Path $solutionDir $projectPath
-                $fullPath = [System.IO.Path]::GetFullPath($fullPath)
-                if (Test-Path $fullPath) {
-                    $projects += $fullPath
+                
+                # Resolve path relative to solution directory
+                if ([System.IO.Path]::IsPathRooted($projectPath)) {
+                    $fullPath = $projectPath
+                } else {
+                    $fullPath = Join-Path $solutionDir $projectPath
+                }
+                
+                # Normalize the path
+                try {
+                    $fullPath = [System.IO.Path]::GetFullPath($fullPath)
+                    if (Test-Path $fullPath) {
+                        $projects += $fullPath
+                    }
+                } catch {
+                    # Skip invalid paths
                 }
             }
         }
@@ -45,16 +57,27 @@ function Get-ProjectsFromSolution($solutionPath) {
 
 # First, try to find build projects directly (build directory or *build*.csproj)
 # This is for Nuke build systems where build.csproj is typically not in the solution
-$buildProjectSearch = @(
-    "$PSScriptRoot\build\*.csproj",
-    "$PSScriptRoot\*build*.csproj"
+$buildDirs = @(
+    "$PSScriptRoot\build",
+    $PSScriptRoot
 )
 
-foreach ($pattern in $buildProjectSearch) {
-    $foundFiles = Get-ChildItem -Path (Split-Path $pattern -Parent) -Filter (Split-Path $pattern -Leaf) -ErrorAction SilentlyContinue
-    if ($foundFiles) {
-        $BuildProjectFile = $foundFiles[0].FullName
-        break
+foreach ($dir in $buildDirs) {
+    if (Test-Path $dir) {
+        # Search for *build*.csproj files
+        $foundFiles = Get-ChildItem -Path $dir -Filter "*build*.csproj" -ErrorAction SilentlyContinue
+        if ($foundFiles) {
+            $BuildProjectFile = $foundFiles[0].FullName
+            break
+        }
+        # Also check for any .csproj in build directory
+        if ($dir -like "*\build") {
+            $foundFiles = Get-ChildItem -Path $dir -Filter "*.csproj" -ErrorAction SilentlyContinue
+            if ($foundFiles) {
+                $BuildProjectFile = $foundFiles[0].FullName
+                break
+            }
+        }
     }
 }
 
@@ -130,6 +153,23 @@ if ($null -eq $BuildProjectFile) {
 if ($null -eq $BuildProjectFile) {
     $BuildProjectFile = "$PSScriptRoot\build\build.csproj"
     Write-Warning ".csproj file not found, using default path: $BuildProjectFile"
+}
+
+# Validate the path before using it
+if ($null -ne $BuildProjectFile) {
+    try {
+        $BuildProjectFile = [System.IO.Path]::GetFullPath($BuildProjectFile)
+        if (-not (Test-Path $BuildProjectFile)) {
+            Write-Error "Build project file does not exist: $BuildProjectFile"
+            exit 1
+        }
+    } catch {
+        Write-Error "Invalid build project path: $BuildProjectFile"
+        exit 1
+    }
+} else {
+    Write-Error "Could not determine build project file"
+    exit 1
 }
 
 Write-Output "Using build project: $BuildProjectFile"
