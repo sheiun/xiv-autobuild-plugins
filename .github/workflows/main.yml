@@ -51,23 +51,23 @@ jobs:
       - name: Extract repository name
         id: repo-info
         run: |
-          repo_url="${{ matrix.repo_url }}"
+          $repoUrl = "${{ matrix.repo_url }}"
           # Only handle GitHub URLs, skip everything else
-          if [[ $repo_url =~ github\.com/([^/]+)/([^/]+) ]]; then
-              owner="${BASH_REMATCH[1]}"
-              repo="${BASH_REMATCH[2]}"
+          if ($repoUrl -match 'github\.com/([^/]+)/([^/]+)') {
+              $owner = $Matches[1]
+              $repo = $Matches[2]
               # Handle URLs with /tree/branch or /tree/branch/path
-              if [[ $repo =~ ^([^/]+) ]]; then
-                  repo="${BASH_REMATCH[1]}"
-              fi
-              echo "owner=$owner" >> $GITHUB_OUTPUT
-              echo "repo=$repo" >> $GITHUB_OUTPUT
-              echo "repo_name=$repo" >> $GITHUB_OUTPUT
-              echo "skip=false" >> $GITHUB_OUTPUT
-          else
-              echo "Skipping non-GitHub repository: $repo_url"
-              echo "skip=true" >> $GITHUB_OUTPUT
-          fi
+              if ($repo -match '^([^/]+)') {
+                  $repo = $Matches[1]
+              }
+              echo "owner=$owner" >> $env:GITHUB_OUTPUT
+              echo "repo=$repo" >> $env:GITHUB_OUTPUT
+              echo "repo_name=$repo" >> $env:GITHUB_OUTPUT
+              echo "skip=false" >> $env:GITHUB_OUTPUT
+          } else {
+              Write-Host "Skipping non-GitHub repository: $repoUrl"
+              echo "skip=true" >> $env:GITHUB_OUTPUT
+          }
       - name: Checkout Repository
         if: steps.repo-info.outputs.skip != 'true'
         id: checkout-repo
@@ -95,27 +95,27 @@ jobs:
         id: generate-tag
         run: |
           # Get current time in UTC+8 (Asia/Taipei)
-          date_part=$(TZ='Asia/Taipei' date '+%y-%m-%d')
+          $taipeiTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'Taipei Standard Time')
+          $datePart = $taipeiTime.ToString('yy-MM-dd')
 
           cd plugin-repo
           git fetch --tags
-          tags=$(git tag --list "$date_part-*")
+          $tags = git tag --list "$datePart-*"
 
-          max_number=0
-          for tag in $tags; do
-              number_part="${tag##*-}"
-              if [[ $number_part =~ ^[0-9]{2}$ ]]; then
-                  current_number=$((10#$number_part))
-                  if [ $current_number -gt $max_number ]; then
-                      max_number=$current_number
-                  fi
-              fi
-          done
+          $maxNumber = 0
+          foreach ($tag in $tags) {
+              if ($tag -match '-(\d{2})$') {
+                  $currentNumber = [int]$Matches[1]
+                  if ($currentNumber -gt $maxNumber) {
+                      $maxNumber = $currentNumber
+                  }
+              }
+          }
 
-          next_number=$((max_number + 1))
-          new_tag=$(printf "%s-%02d" "$date_part" "$next_number")
-          echo "new_tag=$new_tag" >> $GITHUB_OUTPUT
-          echo "TAG=$new_tag" >> $GITHUB_ENV
+          $nextNumber = $maxNumber + 1
+          $newTag = "{0}-{1:D2}" -f $datePart, $nextNumber
+          echo "new_tag=$newTag" >> $env:GITHUB_OUTPUT
+          echo "TAG=$newTag" >> $env:GITHUB_ENV
           cd ..
       - name: Setup .NET
         if: steps.repo-info.outputs.skip != 'true'
@@ -131,13 +131,13 @@ jobs:
         if: steps.repo-info.outputs.skip != 'true'
         run: |
           cd plugin-repo
-          COMMIT=$(git rev-parse --short HEAD)
-          REPO_NAME="${{ steps.repo-info.outputs.repo_name }}"
-          BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          $commit = git rev-parse --short HEAD
+          $repoName = "${{ steps.repo-info.outputs.repo_name }}"
+          $branch = git rev-parse --abbrev-ref HEAD
 
-          echo "$REPO_NAME" > VERSION
-          echo "$BRANCH" >> VERSION
-          echo "$COMMIT" >> VERSION
+          "$repoName" | Out-File -FilePath VERSION -Encoding utf8
+          "$branch" | Out-File -FilePath VERSION -Append -Encoding utf8
+          "$commit" | Out-File -FilePath VERSION -Append -Encoding utf8
           cd ..
       - name: Find .csproj file
         if: steps.repo-info.outputs.skip != 'true'
