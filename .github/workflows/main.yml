@@ -162,13 +162,13 @@ jobs:
         if: steps.repo-info.outputs.skip != 'true'
         run: |
           cd plugin-repo
-          dotnet restore "${{ steps.find-csproj.outputs.csproj_file }}"
+          dotnet restore "${{ steps.find-csproj.outputs.csproj_file }}" /p:DalamudLibPath="${{ github.workspace }}\dalamud\"
           cd ..
       - name: Build
         if: steps.repo-info.outputs.skip != 'true'
         run: |
           cd plugin-repo
-          dotnet build "${{ steps.find-csproj.outputs.csproj_file }}" --configuration Release -v n /p:DALAMUD_HOME="${{ github.workspace }}/dalamud" /p:SolutionDir="$(Get-Location)" -o ./bin/Release
+          dotnet build "${{ steps.find-csproj.outputs.csproj_file }}" --configuration Release -v n /p:DalamudLibPath="${{ github.workspace }}\dalamud\" /p:SolutionDir="$(Get-Location)" -o ./bin/Release
           cd ..
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: true
