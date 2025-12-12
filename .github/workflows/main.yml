@@ -34,10 +34,10 @@ jobs:
       id-token: write
       contents: write
       attestations: write
-    runs-on: ubuntu-latest
+    runs-on: windows-2022
     defaults:
       run:
-        shell: bash
+        shell: pwsh
     env:
       IsCI: true
     strategy:
@@ -125,8 +125,8 @@ jobs:
       - name: Download Dalamud
         if: steps.repo-info.outputs.skip != 'true'
         run: |
-          curl -L -o latest.7z https://github.com/yanmucorp/Dalamud/releases/download/25-12-08-01/latest.7z
-          7z x latest.7z -o${{ github.workspace }}/dalamud/
+          Invoke-WebRequest -Uri "https://github.com/yanmucorp/Dalamud/releases/download/25-12-08-01/latest.7z" -OutFile "latest.7z"
+          7z x latest.7z -o"${{ github.workspace }}/dalamud/"
       - name: Define VERSION
         if: steps.repo-info.outputs.skip != 'true'
         run: |
@@ -145,13 +145,18 @@ jobs:
         run: |
           cd plugin-repo
           # Find .csproj file (exclude test projects and common patterns)
-          csproj_file=$(find . -name "*.csproj" -not -path "*/obj/*" -not -path "*/bin/*" -not -iname "*test*.csproj" | head -n 1)
-          if [ -z "$csproj_file" ]; then
-            echo "Error: No .csproj file found"
+          $csprojFile = Get-ChildItem -Recurse -Filter "*.csproj" | Where-Object {
+            $_.FullName -notmatch "\\obj\\" -and
+            $_.FullName -notmatch "\\bin\\" -and
+            $_.Name -notmatch "test"
+          } | Select-Object -First 1
+          if (-not $csprojFile) {
+            Write-Error "Error: No .csproj file found"
             exit 1
-          fi
-          echo "Found .csproj: $csproj_file"
-          echo "csproj_file=$csproj_file" >> $GITHUB_OUTPUT
+          }
+          $relativePath = $csprojFile.FullName.Replace((Get-Location).Path + "\", "")
+          Write-Host "Found .csproj: $relativePath"
+          echo "csproj_file=$relativePath" >> $env:GITHUB_OUTPUT
           cd ..
       - name: Restore Dependencies
         if: steps.repo-info.outputs.skip != 'true'
@@ -163,7 +168,7 @@ jobs:
         if: steps.repo-info.outputs.skip != 'true'
         run: |
           cd plugin-repo
-          dotnet build "${{ steps.find-csproj.outputs.csproj_file }}" --configuration Release -v n /p:DALAMUD_HOME="${{ github.workspace }}/dalamud" /p:SolutionDir=$(pwd) /p:EnableWindowsTargeting=true -o ./bin/Release
+          dotnet build "${{ steps.find-csproj.outputs.csproj_file }}" --configuration Release -v n /p:DALAMUD_HOME="${{ github.workspace }}/dalamud" /p:SolutionDir="$(Get-Location)" -o ./bin/Release
           cd ..
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: true
