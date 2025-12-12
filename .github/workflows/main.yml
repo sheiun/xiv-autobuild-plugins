@@ -125,8 +125,8 @@ jobs:
       - name: Download Dalamud
         if: steps.repo-info.outputs.skip != 'true'
         run: |
-          curl -o latest.zip ${{ vars.DALAMUD_URL }}
-          unzip latest.zip -d ${{ github.workspace }}/dalamud/
+          curl -L -o latest.7z https://github.com/yanmucorp/Dalamud/releases/download/25-12-08-01/latest.7z
+          7z x latest.7z -o${{ github.workspace }}/dalamud/
       - name: Define VERSION
         if: steps.repo-info.outputs.skip != 'true'
         run: |
