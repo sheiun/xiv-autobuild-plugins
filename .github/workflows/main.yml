@@ -22,13 +22,27 @@ jobs:
         id: set-matrix
         run: |
           # Read repo_urls.txt, filter out empty lines and comments, create JSON matrix
-          repos=$(cat repo_urls.txt | grep -v '^$' | grep -v '^#' | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({repo_url: .})')
+          repos=$(cat repo_urls.txt | grep -v '^$' | grep -v '^#' | jq -R -s -c '
+            split("\n") |
+            map(select(length > 0)) |
+            map(
+              . as $url |
+              if ($url | test("github\\.com/([^/]+)/([^/]+)")) then
+                ($url | capture("github\\.com/(?<owner>[^/]+)/(?<repo>[^/]+)")) as $parts |
+                {
+                  repo_url: $url,
+                  display_name: ($parts.owner + "/" + ($parts.repo | split("/") | .[0]))
+                }
+              else
+                {repo_url: $url, display_name: $url}
+              end
+            )')
           echo "matrix={\"include\":$repos}" >> $GITHUB_OUTPUT
           count=$(echo $repos | jq 'length')
           echo "Found $count repositories"
 
   build:
-    name: Build ${{ matrix.repo_url }}
+    name: Build ${{ matrix.display_name }}
     needs: prepare
     permissions:
       id-token: write
@@ -86,21 +100,28 @@ jobs:
           submodules: false
           fetch-depth: 0
           path: plugin-repo
-      - name: Checkout to last commit before 2025-08-06
+      - name: Checkout to last commit before 2025-08-01
         if: steps.repo-info.outputs.skip != 'true'
         run: |
           cd plugin-repo
-          # Find the last commit before 2025-08-06 00:00:00 UTC+8
-          $targetCommit = git rev-list -n 1 --first-parent --before="2025-08-06T00:00:00+08:00" HEAD
+          # Find the last commit before 2025-08-01 00:00:00 UTC+8
+          $targetCommit = git rev-list -n 1 --first-parent --before="2025-08-01T00:00:00+08:00" HEAD
           if ($targetCommit) {
-            Write-Host "Checking out to commit before 2025-08-06: $targetCommit"
+            Write-Host "Checking out to commit before 2025-08-01: $targetCommit"
             git checkout $targetCommit
-            # Update submodules if they exist
+            # Update submodules if they exist (continue even if some fail)
             if (Test-Path .gitmodules) {
-              git submodule update --init --recursive
+              Write-Host "Updating submodules..."
+              try {
+                git submodule update --init --recursive 2>&1 | Write-Host
+              } catch {
+                Write-Warning "Some submodules failed to update: $_"
+              }
+              # Reset error code to allow workflow to continue
+              $global:LASTEXITCODE = 0
             }
           } else {
-            Write-Host "No commits found before 2025-08-06, using current HEAD"
+            Write-Host "No commits found before 2025-08-01, using current HEAD"
           }
           cd ..
       - name: Skip non-GitHub repositories
@@ -156,7 +177,7 @@ jobs:
           "$branch" | Out-File -FilePath VERSION -Append -Encoding utf8
           "$commit" | Out-File -FilePath VERSION -Append -Encoding utf8
           cd ..
-      - name: Find .csproj file
+      - name: Find .csproj file and extract version
         if: steps.repo-info.outputs.skip != 'true'
         id: find-csproj
         run: |
@@ -174,6 +195,31 @@ jobs:
           $relativePath = $csprojFile.FullName.Replace((Get-Location).Path + "\", "")
           Write-Host "Found .csproj: $relativePath"
           echo "csproj_file=$relativePath" >> $env:GITHUB_OUTPUT
+
+          # Extract version from .csproj file
+          [xml]$csprojContent = Get-Content $csprojFile.FullName
+          $version = $null
+
+          # Try to get Version property
+          if ($csprojContent.Project.PropertyGroup.Version) {
+            $version = $csprojContent.Project.PropertyGroup.Version | Select-Object -First 1
+          }
+          # Fallback to AssemblyVersion
+          elseif ($csprojContent.Project.PropertyGroup.AssemblyVersion) {
+            $version = $csprojContent.Project.PropertyGroup.AssemblyVersion | Select-Object -First 1
+          }
+          # Fallback to FileVersion
+          elseif ($csprojContent.Project.PropertyGroup.FileVersion) {
+            $version = $csprojContent.Project.PropertyGroup.FileVersion | Select-Object -First 1
+          }
+
+          if ($version) {
+            Write-Host "Extracted version: $version"
+            echo "version=$version" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "No version found in .csproj, using 'unknown'"
+            echo "version=unknown" >> $env:GITHUB_OUTPUT
+          }
           cd ..
       - name: Restore Dependencies
         if: steps.repo-info.outputs.skip != 'true'
@@ -193,6 +239,6 @@ jobs:
         if: steps.repo-info.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: plugins-artifact-${{ steps.repo-info.outputs.repo_name }}
+          name: ${{ steps.repo-info.outputs.repo_name }}-v${{ steps.find-csproj.outputs.version }}
           path: plugin-repo/bin/Release
           if-no-files-found: error
