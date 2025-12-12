@@ -139,17 +139,31 @@ jobs:
           echo "$BRANCH" >> VERSION
           echo "$COMMIT" >> VERSION
           cd ..
+      - name: Find .csproj file
+        if: steps.repo-info.outputs.skip != 'true'
+        id: find-csproj
+        run: |
+          cd plugin-repo
+          # Find .csproj file (exclude test projects and common patterns)
+          csproj_file=$(find . -name "*.csproj" -not -path "*/obj/*" -not -path "*/bin/*" -not -iname "*test*.csproj" | head -n 1)
+          if [ -z "$csproj_file" ]; then
+            echo "Error: No .csproj file found"
+            exit 1
+          fi
+          echo "Found .csproj: $csproj_file"
+          echo "csproj_file=$csproj_file" >> $GITHUB_OUTPUT
+          cd ..
       - name: Restore Dependencies
         if: steps.repo-info.outputs.skip != 'true'
         run: |
           cd plugin-repo
-          dotnet restore
+          dotnet restore "${{ steps.find-csproj.outputs.csproj_file }}"
           cd ..
       - name: Build
         if: steps.repo-info.outputs.skip != 'true'
         run: |
           cd plugin-repo
-          dotnet build --configuration Release -v n /p:DALAMUD_HOME="${{ github.workspace }}/dalamud" /p:SolutionDir=$(pwd) -o ./bin/Release src/${{ env.INTERNAL_NAME }}
+          dotnet build "${{ steps.find-csproj.outputs.csproj_file }}" --configuration Release -v n /p:DALAMUD_HOME="${{ github.workspace }}/dalamud" /p:SolutionDir=$(pwd) -o ./bin/Release
           cd ..
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: true
