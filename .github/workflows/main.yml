@@ -86,6 +86,23 @@ jobs:
           submodules: false
           fetch-depth: 0
           path: plugin-repo
+      - name: Checkout to last commit before 2025-08-06
+        if: steps.repo-info.outputs.skip != 'true'
+        run: |
+          cd plugin-repo
+          # Find the last commit before 2025-08-06 00:00:00 UTC+8
+          $targetCommit = git rev-list -n 1 --first-parent --before="2025-08-06T00:00:00+08:00" HEAD
+          if ($targetCommit) {
+            Write-Host "Checking out to commit before 2025-08-06: $targetCommit"
+            git checkout $targetCommit
+            # Update submodules if they exist
+            if (Test-Path .gitmodules) {
+              git submodule update --init --recursive
+            }
+          } else {
+            Write-Host "No commits found before 2025-08-06, using current HEAD"
+          }
+          cd ..
       - name: Skip non-GitHub repositories
         if: steps.repo-info.outputs.skip == 'true'
         run: |
@@ -168,7 +185,7 @@ jobs:
         if: steps.repo-info.outputs.skip != 'true'
         run: |
           cd plugin-repo
-          dotnet build "${{ steps.find-csproj.outputs.csproj_file }}" --configuration Release -v n /p:DalamudLibPath="${{ github.workspace }}\dalamud\" /p:SolutionDir="$(Get-Location)" -o ./bin/Release
+          dotnet build "${{ steps.find-csproj.outputs.csproj_file }}" --configuration Release -v n /p:DALAMUD_HOME="${{ github.workspace }}/dalamud" /p:SolutionDir="$(Get-Location)" -o ./bin/Release
           cd ..
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: true
